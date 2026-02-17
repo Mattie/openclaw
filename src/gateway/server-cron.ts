@@ -1,6 +1,5 @@
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import type { CliDeps } from "../cli/deps.js";
-import { createOutboundSendDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
 import {
   canonicalizeMainSessionAlias,
@@ -8,22 +7,17 @@ import {
   resolveAgentMainSessionKey,
 } from "../config/sessions.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
-import { resolveCronDeliveryPlan } from "../cron/delivery.js";
-import {
-  formatDirectCommandDeliveryMessage,
-  resolveDirectCommandDeliveryBestEffort,
-} from "../cron/direct-command-delivery.js";
-import { formatDirectCommandResult, runCronDirectCommand } from "../cron/direct-command.js";
+import { runCronDirectCommand } from "../cron/direct-command.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
-import { resolveDeliveryTarget } from "../cron/isolated-agent/delivery-target.js";
 import { appendCronRunLog, resolveCronRunLogPath } from "../cron/run-log.js";
 import { CronService } from "../cron/service.js";
 import { resolveCronStorePath } from "../cron/store.js";
 import { normalizeHttpWebhookUrl } from "../cron/webhook-url.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
-import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
-import { resolveAgentOutboundIdentity } from "../infra/outbound/identity.js";
+import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
+import { SsrFBlockedError } from "../infra/net/ssrf.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getChildLogger } from "../logging.js";
 import { normalizeAgentId, toAgentStoreSessionKey } from "../routing/session-key.js";
@@ -36,22 +30,6 @@ export type GatewayCronState = {
 };
 
 const CRON_WEBHOOK_TIMEOUT_MS = 10_000;
-
-function withDirectCommandDeliveryError(
-  result: Awaited<ReturnType<typeof runCronDirectCommand>>,
-  error: string,
-): Awaited<ReturnType<typeof runCronDirectCommand>> {
-  const normalizedResult = result.result
-    ? { ...result.result, status: "error" as const }
-    : undefined;
-  return {
-    ...result,
-    status: "error",
-    error,
-    result: normalizedResult,
-    summary: normalizedResult ? formatDirectCommandResult(normalizedResult) : result.summary,
-  };
-}
 
 function redactWebhookUrl(url: string): string {
   try {
@@ -229,7 +207,7 @@ export function buildGatewayCronService(params: {
       timeoutSeconds,
       maxOutputBytes,
     }) => {
-      const directCommandResult = await runCronDirectCommand({
+      return await runCronDirectCommand({
         jobId: job.id,
         payload: {
           kind: "directCommand",
@@ -241,70 +219,6 @@ export function buildGatewayCronService(params: {
           maxOutputBytes,
         },
       });
-
-      const deliveryPlan = resolveCronDeliveryPlan(job);
-      if (
-        deliveryPlan.mode !== "announce" ||
-        !deliveryPlan.requested ||
-        !directCommandResult.result
-      ) {
-        return directCommandResult;
-      }
-
-      const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
-      const resolvedDelivery = await resolveDeliveryTarget(runtimeConfig, agentId, {
-        channel: deliveryPlan.channel ?? "last",
-        to: deliveryPlan.to,
-      });
-      const bestEffort = resolveDirectCommandDeliveryBestEffort(job);
-
-      if (resolvedDelivery.error) {
-        if (bestEffort) {
-          cronLogger.warn(
-            { err: String(resolvedDelivery.error), jobId: job.id },
-            "cron: direct command delivery target resolution failed",
-          );
-          return directCommandResult;
-        }
-        return withDirectCommandDeliveryError(directCommandResult, resolvedDelivery.error.message);
-      }
-
-      if (!resolvedDelivery.to) {
-        const message = "cron direct command delivery target is missing";
-        if (bestEffort) {
-          cronLogger.warn({ jobId: job.id }, message);
-          return directCommandResult;
-        }
-        return withDirectCommandDeliveryError(directCommandResult, message);
-      }
-
-      try {
-        await deliverOutboundPayloads({
-          cfg: runtimeConfig,
-          channel: resolvedDelivery.channel,
-          to: resolvedDelivery.to,
-          accountId: resolvedDelivery.accountId,
-          threadId: resolvedDelivery.threadId,
-          payloads: [
-            {
-              text: formatDirectCommandDeliveryMessage({
-                jobName: job.name,
-                result: directCommandResult.result,
-              }),
-            },
-          ],
-          agentId,
-          identity: resolveAgentOutboundIdentity(runtimeConfig, agentId),
-          bestEffort,
-          deps: createOutboundSendDeps(params.deps),
-        });
-      } catch (err) {
-        if (!bestEffort) {
-          return withDirectCommandDeliveryError(directCommandResult, String(err));
-        }
-      }
-
-      return directCommandResult;
     },
     log: getChildLogger({ module: "cron", storePath }),
     onEvent: (evt) => {
@@ -355,25 +269,43 @@ export function buildGatewayCronService(params: {
           const timeout = setTimeout(() => {
             abortController.abort();
           }, CRON_WEBHOOK_TIMEOUT_MS);
-          void fetch(webhookTarget.url, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(evt),
-            signal: abortController.signal,
-          })
-            .catch((err) => {
-              cronLogger.warn(
-                {
-                  err: String(err),
-                  jobId: evt.jobId,
-                  webhookUrl: redactWebhookUrl(webhookTarget.url),
+
+          void (async () => {
+            try {
+              const result = await fetchWithSsrFGuard({
+                url: webhookTarget.url,
+                init: {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify(evt),
+                  signal: abortController.signal,
                 },
-                "cron: webhook delivery failed",
-              );
-            })
-            .finally(() => {
+              });
+              await result.release();
+            } catch (err) {
+              if (err instanceof SsrFBlockedError) {
+                cronLogger.warn(
+                  {
+                    reason: formatErrorMessage(err),
+                    jobId: evt.jobId,
+                    webhookUrl: redactWebhookUrl(webhookTarget.url),
+                  },
+                  "cron: webhook delivery blocked by SSRF guard",
+                );
+              } else {
+                cronLogger.warn(
+                  {
+                    err: formatErrorMessage(err),
+                    jobId: evt.jobId,
+                    webhookUrl: redactWebhookUrl(webhookTarget.url),
+                  },
+                  "cron: webhook delivery failed",
+                );
+              }
+            } finally {
               clearTimeout(timeout);
-            });
+            }
+          })();
         }
         const logPath = resolveCronRunLogPath({
           storePath,
