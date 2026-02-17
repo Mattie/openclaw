@@ -85,6 +85,10 @@ function normalizePayloadKind(payload: Record<string, unknown>) {
     payload.kind = "systemEvent";
     return true;
   }
+  if (raw === "directcommand") {
+    payload.kind = "directCommand";
+    return true;
+  }
   return false;
 }
 
