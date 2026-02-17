@@ -115,10 +115,21 @@ Cron supports three schedule kinds:
 
 - `at`: one-shot timestamp via `schedule.at` (ISO 8601).
 - `every`: fixed interval (ms).
-- `cron`: 5-field cron expression with optional IANA timezone.
+- `cron`: 5-field cron expression (or 6-field with seconds) with optional IANA timezone.
 
 Cron expressions use `croner`. If a timezone is omitted, the Gateway host’s
 local timezone is used.
+
+To reduce top-of-hour load spikes across many gateways, OpenClaw applies a
+deterministic per-job stagger window of up to 5 minutes for recurring
+top-of-hour expressions (for example `0 * * * *`, `0 */2 * * *`). Fixed-hour
+expressions such as `0 7 * * *` remain exact.
+
+For any cron schedule, you can set an explicit stagger window with `schedule.staggerMs`
+(`0` keeps exact timing). CLI shortcuts:
+
+- `--stagger 30s` (or `1m`, `5m`) to set an explicit stagger window.
+- `--exact` to force `staggerMs = 0`.
 
 ### Main vs isolated execution
 
@@ -176,14 +187,6 @@ Common `directCommand` fields:
 - `timeoutSeconds`: optional timeout override.
 - `maxOutputBytes`: optional output cap for captured stdout/stderr.
 
-`directCommand` runs produce a deterministic result object with:
-
-- `status`: `ok` / `error` / `skipped`
-- `summary`: compact merged output text
-- `captured.stdout` / `captured.stderr`: bounded captured streams
-
-The finished cron event summary stores this result object as JSON, so webhook consumers and run logs can parse a stable shape.
-
 `directCommand` still uses `sessionTarget: "isolated"`; no separate session target is required.
 
 Delivery config:
@@ -195,9 +198,6 @@ Delivery config:
 
 Announce delivery suppresses messaging tool sends for the run; use `delivery.channel`/`delivery.to`
 to target the chat instead. When `delivery.mode = "none"`, no summary is posted to the main session.
-
-For `directCommand` jobs, `delivery.mode = "announce"` sends a compact command-result message directly with
-`delivery.channel` + `delivery.to` (respecting `delivery.bestEffort`) without running an isolated LLM turn.
 
 If `delivery` is omitted for isolated jobs, OpenClaw defaults to `announce`.
 
@@ -227,7 +227,6 @@ Behavior details:
 - The endpoint must be a valid HTTP(S) URL.
 - No channel delivery is attempted in webhook mode.
 - No main-session summary is posted in webhook mode.
-- For `directCommand` jobs, the webhook summary is the deterministic command result object JSON.
 - If `cron.webhookToken` is set, auth header is `Authorization: Bearer <cron.webhookToken>`.
 - Deprecated fallback: stored legacy jobs with `notify: true` still post to `cron.webhook` (if configured), with a warning so you can migrate to `delivery.mode = "webhook"`.
 
@@ -432,6 +431,19 @@ openclaw cron add \
   --to "+15551234567"
 ```
 
+Recurring cron job with explicit 30-second stagger:
+
+```bash
+openclaw cron add \
+  --name "Minute watcher" \
+  --cron "0 * * * * *" \
+  --tz "UTC" \
+  --stagger 30s \
+  --session isolated \
+  --message "Run minute watcher checks." \
+  --announce
+```
+
 Recurring isolated job (deliver to a Telegram topic):
 
 ```bash
@@ -487,6 +499,12 @@ openclaw cron edit <jobId> \
   --message "Updated prompt" \
   --model "opus" \
   --thinking low
+```
+
+Force an existing cron job to run exactly on schedule (no stagger):
+
+```bash
+openclaw cron edit <jobId> --exact
 ```
 
 Run history:
