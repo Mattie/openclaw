@@ -702,20 +702,29 @@ describe("Cron issue regressions", () => {
     const store = await makeStorePath();
     const scheduledAt = Date.parse("2026-02-15T13:00:00.000Z");
 
-    const cronJob = createIsolatedRegressionJob({
+    const cronJob: CronJob = {
       id: "direct-command-timeout-override",
       name: "direct-timeout",
-      scheduledAt,
+      enabled: true,
+      createdAtMs: scheduledAt - 86_400_000,
+      updatedAtMs: scheduledAt - 86_400_000,
       schedule: { kind: "at", at: new Date(scheduledAt).toISOString() },
+      sessionTarget: "isolated",
+      wakeMode: "next-heartbeat",
       payload: {
         kind: "directCommand",
         command: "echo",
         args: ["work"],
         timeoutSeconds: 700,
       },
+      delivery: { mode: "announce" },
       state: { nextRunAtMs: scheduledAt },
-    });
-    await writeCronJobs(store.storePath, [cronJob]);
+    };
+    await fs.writeFile(
+      store.storePath,
+      JSON.stringify({ version: 1, jobs: [cronJob] }, null, 2),
+      "utf-8",
+    );
 
     const deferredRun = createDeferred<{ status: "ok"; summary: string }>();
     const state = createCronServiceState({
