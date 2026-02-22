@@ -133,7 +133,7 @@ describe("buildGatewayCronService", () => {
 
     loadConfigMock.mockReturnValue(cfg);
     fetchWithSsrFGuardMock.mockRejectedValue(
-      new SsrFBlockedError("Blocked: private/internal IP address"),
+      new SsrFBlockedError("Blocked: resolves to private/internal/special-use IP address"),
     );
 
     const state = buildGatewayCronService({
