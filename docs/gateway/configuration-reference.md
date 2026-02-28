@@ -2445,6 +2445,9 @@ Current builds no longer include the TCP bridge. Nodes connect over the Gateway 
   cron: {
     enabled: true,
     maxConcurrentRuns: 2,
+    directCommand: {
+      enforceAllowlist: true, // default true; set false only for trusted environments
+    },
     webhook: "https://example.invalid/legacy", // deprecated fallback for stored notify:true jobs
     webhookToken: "replace-with-dedicated-token", // optional bearer token for outbound webhook auth
     sessionRetention: "24h", // duration string or false
@@ -2453,6 +2456,10 @@ Current builds no longer include the TCP bridge. Nodes connect over the Gateway 
 ```
 
 - `sessionRetention`: how long to keep completed cron sessions before pruning. Default: `24h`.
+- `directCommand.enforceAllowlist`: when true (default), `payload.kind = "directCommand"` must pass exec allowlist checks before running.
+  - Uses the same exec approvals allowlist evaluation as `exec`; see [Exec approvals](/tools/exec-approvals).
+  - `tools.exec.safeBins` can satisfy allowlist checks for supported stdin-only commands.
+  - On deny, cron records an error summary reason (`allowlist miss` or `allowlist analysis failed`).
 - `webhookToken`: bearer token used for cron webhook POST delivery (`delivery.mode = "webhook"`), if omitted no auth header is sent.
 - `webhook`: deprecated legacy fallback webhook URL (http/https) used only for stored jobs that still have `notify: true`.
 
