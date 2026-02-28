@@ -16,7 +16,11 @@ import {
 import { formatDirectCommandResult, runCronDirectCommand } from "../cron/direct-command.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
 import { resolveDeliveryTarget } from "../cron/isolated-agent/delivery-target.js";
-import { appendCronRunLog, resolveCronRunLogPath } from "../cron/run-log.js";
+import {
+  appendCronRunLog,
+  resolveCronRunLogPath,
+  resolveCronRunLogPruneOptions,
+} from "../cron/run-log.js";
 import { CronService } from "../cron/service.js";
 import { resolveCronStorePath } from "../cron/store.js";
 import { normalizeHttpWebhookUrl } from "../cron/webhook-url.js";
@@ -170,6 +174,7 @@ export function buildGatewayCronService(params: {
   };
 
   const defaultAgentId = resolveDefaultAgentId(params.cfg);
+  const runLogPrune = resolveCronRunLogPruneOptions(params.cfg.cron?.runLog);
   const resolveSessionStorePath = (agentId?: string) =>
     resolveStorePath(params.cfg.session?.store, {
       agentId: agentId ?? defaultAgentId,
@@ -203,11 +208,31 @@ export function buildGatewayCronService(params: {
     },
     runHeartbeatOnce: async (opts) => {
       const { runtimeConfig, agentId, sessionKey } = resolveCronWakeTarget(opts);
+      // Merge cron-supplied heartbeat overrides (e.g. target: "last") with the
+      // fully resolved agent heartbeat config so cron-triggered heartbeats
+      // respect agent-specific overrides (agents.list[].heartbeat) before
+      // falling back to agents.defaults.heartbeat.
+      const agentEntry =
+        Array.isArray(runtimeConfig.agents?.list) &&
+        runtimeConfig.agents.list.find(
+          (entry) =>
+            entry && typeof entry.id === "string" && normalizeAgentId(entry.id) === agentId,
+        );
+      const agentHeartbeat =
+        agentEntry && typeof agentEntry === "object" ? agentEntry.heartbeat : undefined;
+      const baseHeartbeat = {
+        ...runtimeConfig.agents?.defaults?.heartbeat,
+        ...agentHeartbeat,
+      };
+      const heartbeatOverride = opts?.heartbeat
+        ? { ...baseHeartbeat, ...opts.heartbeat }
+        : undefined;
       return await runHeartbeatOnce({
         cfg: runtimeConfig,
         reason: opts?.reason,
         agentId,
         sessionKey,
+        heartbeat: heartbeatOverride,
         deps: { ...params.deps, runtime: defaultRuntime },
       });
     },
@@ -405,25 +430,29 @@ export function buildGatewayCronService(params: {
           storePath,
           jobId: evt.jobId,
         });
-        void appendCronRunLog(logPath, {
-          ts: Date.now(),
-          jobId: evt.jobId,
-          action: "finished",
-          status: evt.status,
-          error: evt.error,
-          summary: evt.summary,
-          delivered: evt.delivered,
-          deliveryStatus: evt.deliveryStatus,
-          deliveryError: evt.deliveryError,
-          sessionId: evt.sessionId,
-          sessionKey: evt.sessionKey,
-          runAtMs: evt.runAtMs,
-          durationMs: evt.durationMs,
-          nextRunAtMs: evt.nextRunAtMs,
-          model: evt.model,
-          provider: evt.provider,
-          usage: evt.usage,
-        }).catch((err) => {
+        void appendCronRunLog(
+          logPath,
+          {
+            ts: Date.now(),
+            jobId: evt.jobId,
+            action: "finished",
+            status: evt.status,
+            error: evt.error,
+            summary: evt.summary,
+            delivered: evt.delivered,
+            deliveryStatus: evt.deliveryStatus,
+            deliveryError: evt.deliveryError,
+            sessionId: evt.sessionId,
+            sessionKey: evt.sessionKey,
+            runAtMs: evt.runAtMs,
+            durationMs: evt.durationMs,
+            nextRunAtMs: evt.nextRunAtMs,
+            model: evt.model,
+            provider: evt.provider,
+            usage: evt.usage,
+          },
+          runLogPrune,
+        ).catch((err) => {
           cronLogger.warn({ err: String(err), logPath }, "cron: run log append failed");
         });
       }

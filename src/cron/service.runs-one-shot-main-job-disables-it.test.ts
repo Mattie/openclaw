@@ -479,7 +479,9 @@ describe("CronService", () => {
     const job = await addWakeModeNowMainSystemEventJob(cron, { name: "wakeMode now waits" });
 
     const runPromise = cron.run(job.id, "force");
-    for (let i = 0; i < 10; i++) {
+    // `cron.run()` now persists the running marker before executing the job.
+    // Allow more microtask turns so the post-lock execution can start.
+    for (let i = 0; i < 500; i++) {
       if (runHeartbeatOnce.mock.calls.length > 0) {
         break;
       }
@@ -507,7 +509,7 @@ describe("CronService", () => {
     await store.cleanup();
   });
 
-  it("passes agentId + sessionKey to runHeartbeatOnce for main-session wakeMode now jobs", async () => {
+  it("passes agentId and resolves main session for wakeMode now main jobs", async () => {
     const runHeartbeatOnce = vi.fn(async () => ({ status: "ran" as const, durationMs: 1 }));
 
     const { store, cron, enqueueSystemEvent, requestHeartbeatNow } =
@@ -532,13 +534,13 @@ describe("CronService", () => {
       expect.objectContaining({
         reason: `cron:${job.id}`,
         agentId: "ops",
-        sessionKey,
+        sessionKey: undefined,
       }),
     );
     expect(requestHeartbeatNow).not.toHaveBeenCalled();
     expect(enqueueSystemEvent).toHaveBeenCalledWith(
       "hello",
-      expect.objectContaining({ agentId: "ops", sessionKey }),
+      expect.objectContaining({ agentId: "ops", sessionKey: undefined }),
     );
 
     cron.stop();
@@ -576,7 +578,7 @@ describe("CronService", () => {
     expect(requestHeartbeatNow).toHaveBeenCalledWith(
       expect.objectContaining({
         reason: `cron:${job.id}`,
-        sessionKey,
+        sessionKey: undefined,
       }),
     );
     expect(job.state.lastStatus).toBe("ok");
@@ -614,6 +616,28 @@ describe("CronService", () => {
       cron,
       events,
       name: "weekly delivered",
+      status: "ok",
+    });
+    expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
+    expect(enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(requestHeartbeatNow).not.toHaveBeenCalled();
+    cron.stop();
+    await store.cleanup();
+  });
+
+  it("does not post isolated summary to main when announce delivery was attempted", async () => {
+    const runIsolatedAgentJob = vi.fn(async () => ({
+      status: "ok" as const,
+      summary: "done",
+      delivered: false,
+      deliveryAttempted: true,
+    }));
+    const { store, cron, enqueueSystemEvent, requestHeartbeatNow, events } =
+      await createIsolatedAnnounceHarness(runIsolatedAgentJob);
+    await runIsolatedAnnounceJobAndWait({
+      cron,
+      events,
+      name: "weekly attempted",
       status: "ok",
     });
     expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
@@ -674,6 +698,28 @@ describe("CronService", () => {
       expect.objectContaining({ agentId: undefined }),
     );
     expect(requestHeartbeatNow).toHaveBeenCalled();
+    cron.stop();
+    await store.cleanup();
+  });
+
+  it("does not post fallback main summary for isolated delivery-target errors", async () => {
+    const runIsolatedAgentJob = vi.fn(async () => ({
+      status: "error" as const,
+      summary: "last output",
+      error: "Channel is required when multiple channels are configured: telegram, discord",
+      errorKind: "delivery-target" as const,
+    }));
+    const { store, cron, enqueueSystemEvent, requestHeartbeatNow, events } =
+      await createIsolatedAnnounceHarness(runIsolatedAgentJob);
+    await runIsolatedAnnounceJobAndWait({
+      cron,
+      events,
+      name: "isolated delivery target error test",
+      status: "error",
+    });
+
+    expect(enqueueSystemEvent).not.toHaveBeenCalled();
+    expect(requestHeartbeatNow).not.toHaveBeenCalled();
     cron.stop();
     await store.cleanup();
   });

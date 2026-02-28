@@ -71,6 +71,7 @@ export function registerCronAddCommand(cron: Command) {
       .option("--keep-after-run", "Keep one-shot job after it succeeds", false)
       .option("--agent <id>", "Agent id for this job")
       .option("--session <target>", "Session target (main|isolated)")
+      .option("--session-key <key>", "Session key for job routing (e.g. agent:my-agent:my-session)")
       .option("--wake <mode>", "Wake mode (now|next-heartbeat)", "now")
       .option("--at <when>", "Run once at time (ISO) or +duration (e.g. 20m)")
       .option("--every <duration>", "Run every duration (e.g. 10m, 1h)")
@@ -96,6 +97,7 @@ export function registerCronAddCommand(cron: Command) {
         "--to <dest>",
         "Delivery destination (E.164, Telegram chatId, or Discord channel/user)",
       )
+      .option("--account <id>", "Channel account id for delivery (multi-account setups)")
       .option("--best-effort-deliver", "Do not fail the job if delivery fails", false)
       .option("--json", "Output JSON", false)
       .action(async (opts: GatewayRpcOpts & Record<string, unknown>, cmd?: Command) => {
@@ -256,6 +258,15 @@ export function registerCronAddCommand(cron: Command) {
             throw new Error("--announce/--no-deliver require --session isolated.");
           }
 
+          const accountId =
+            typeof opts.account === "string" && opts.account.trim()
+              ? opts.account.trim()
+              : undefined;
+
+          if (accountId && (sessionTarget !== "isolated" || payload.kind !== "agentTurn")) {
+            throw new Error("--account requires an isolated agentTurn job with delivery.");
+          }
+
           const deliveryMode =
             sessionTarget === "isolated" &&
             (payload.kind === "agentTurn" || payload.kind === "directCommand")
@@ -277,12 +288,18 @@ export function registerCronAddCommand(cron: Command) {
               ? opts.description.trim()
               : undefined;
 
+          const sessionKey =
+            typeof opts.sessionKey === "string" && opts.sessionKey.trim()
+              ? opts.sessionKey.trim()
+              : undefined;
+
           const params = {
             name,
             description,
             enabled: !opts.disabled,
             deleteAfterRun: opts.deleteAfterRun ? true : opts.keepAfterRun ? false : undefined,
             agentId,
+            sessionKey,
             schedule,
             sessionTarget,
             wakeMode,
@@ -295,6 +312,7 @@ export function registerCronAddCommand(cron: Command) {
                       ? opts.channel.trim()
                       : undefined,
                   to: typeof opts.to === "string" && opts.to.trim() ? opts.to.trim() : undefined,
+                  accountId,
                   bestEffort: opts.bestEffortDeliver ? true : undefined,
                 }
               : undefined,

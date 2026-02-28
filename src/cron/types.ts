@@ -22,6 +22,8 @@ export type CronDelivery = {
   mode: CronDeliveryMode;
   channel?: CronMessageChannel;
   to?: string;
+  /** Explicit channel account id for multi-account setups (e.g. multiple Telegram bots). */
+  accountId?: string;
   bestEffort?: boolean;
 };
 
@@ -47,6 +49,8 @@ export type CronRunTelemetry = {
 export type CronRunOutcome = {
   status: CronRunStatus;
   error?: string;
+  /** Optional classifier for execution errors to guide fallback behavior. */
+  errorKind?: "delivery-target";
   summary?: string;
   sessionId?: string;
   sessionKey?: string;
