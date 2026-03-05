@@ -48,6 +48,23 @@ type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
   cacheRetention?: CacheRetention;
   openaiWsWarmup?: boolean;
 };
+type OpenAIToolSearchToolChoice =
+  | "auto"
+  | "none"
+  | "required"
+  | { type?: unknown; function?: { name?: unknown } };
+type OpenAIToolSearchToolDefinition =
+  | {
+      type: "function";
+      defer_loading?: boolean;
+      function?: Record<string, unknown>;
+      [key: string]: unknown;
+    }
+  | {
+      type: "tool_search";
+      [key: string]: unknown;
+    }
+  | Record<string, unknown>;
 
 /**
  * Resolve cacheRetention from extraParams, supporting both new `cacheRetention`
@@ -273,6 +290,83 @@ function shouldEnableOpenAIResponsesServerCompaction(
   }
   // Auto-enable for direct OpenAI Responses models.
   return model.provider === "openai";
+}
+
+function shouldEnableOpenAIToolSearch(params: {
+  model: {
+    api?: unknown;
+    provider?: unknown;
+    baseUrl?: unknown;
+  };
+  extraParams: Record<string, unknown> | undefined;
+  toolChoice: unknown;
+  tools: unknown;
+}): boolean {
+  if (params.extraParams?.openaiToolSearch !== true) {
+    return false;
+  }
+  if (params.model.provider !== "openai" || params.model.api !== "openai-responses") {
+    return false;
+  }
+  if (!isDirectOpenAIBaseUrl(params.model.baseUrl)) {
+    return false;
+  }
+  if (!Array.isArray(params.tools) || params.tools.length === 0) {
+    return false;
+  }
+  if (
+    params.tools.some(
+      (tool): tool is { type: "tool_search" } =>
+        !!tool && typeof tool === "object" && (tool as { type?: unknown }).type === "tool_search",
+    )
+  ) {
+    return false;
+  }
+
+  const toolChoice = params.toolChoice as OpenAIToolSearchToolChoice | undefined;
+  if (toolChoice === undefined || toolChoice === "auto") {
+    return true;
+  }
+  if (toolChoice === "none" || toolChoice === "required") {
+    return false;
+  }
+  return !(
+    toolChoice &&
+    typeof toolChoice === "object" &&
+    toolChoice.type === "function" &&
+    typeof toolChoice.function?.name === "string"
+  );
+}
+
+function createOpenAIToolSearchWrapper(
+  baseStreamFn: StreamFn | undefined,
+  extraParams: Record<string, unknown> | undefined,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) =>
+    underlying(model, context, {
+      ...options,
+      onPayload: (payload) => {
+        if (payload && typeof payload === "object") {
+          const payloadObj = payload as Record<string, unknown>;
+          if (
+            shouldEnableOpenAIToolSearch({
+              model,
+              extraParams,
+              toolChoice: payloadObj.tool_choice,
+              tools: payloadObj.tools,
+            })
+          ) {
+            const tools = payloadObj.tools as OpenAIToolSearchToolDefinition[];
+            const deferredTools = tools.map((tool) =>
+              tool.type === "function" ? { ...tool, defer_loading: true } : tool,
+            );
+            payloadObj.tools = [{ type: "tool_search" }, ...deferredTools];
+          }
+        }
+        options?.onPayload?.(payload);
+      },
+    });
 }
 
 function createOpenAIResponsesContextManagementWrapper(
@@ -963,5 +1057,6 @@ export function applyExtraParamsToAgent(
   // Work around upstream pi-ai hardcoding `store: false` for Responses API.
   // Force `store=true` for direct OpenAI Responses models and auto-enable
   // server-side compaction for compatible OpenAI Responses payloads.
+  agent.streamFn = createOpenAIToolSearchWrapper(agent.streamFn, merged);
   agent.streamFn = createOpenAIResponsesContextManagementWrapper(agent.streamFn, merged);
 }

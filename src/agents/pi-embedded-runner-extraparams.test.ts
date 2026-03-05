@@ -1206,6 +1206,206 @@ describe("applyExtraParamsToAgent", () => {
     expect(payload).not.toHaveProperty("context_management");
   });
 
+  it("does not enable OpenAI tool_search by default", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://api.openai.com/v1",
+      } as unknown as Model<"openai-responses">,
+      payload: {
+        store: false,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "web_search",
+              description: "Search the web",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      },
+    });
+    expect(payload.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "web_search",
+          description: "Search the web",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+  });
+
+  it("enables hosted OpenAI tool_search when opt-in model params are set", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": {
+                params: {
+                  openaiToolSearch: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://api.openai.com/v1",
+      } as unknown as Model<"openai-responses">,
+      payload: {
+        store: false,
+        tool_choice: "auto",
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "web_search",
+              description: "Search the web",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+          {
+            type: "function",
+            function: {
+              name: "read_file",
+              description: "Read a file",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      },
+    });
+    expect(payload.tools).toEqual([
+      { type: "tool_search" },
+      {
+        type: "function",
+        defer_loading: true,
+        function: {
+          name: "web_search",
+          description: "Search the web",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      {
+        type: "function",
+        defer_loading: true,
+        function: {
+          name: "read_file",
+          description: "Read a file",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+  });
+
+  it("skips OpenAI tool_search when a specific function toolChoice is requested", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": {
+                params: {
+                  openaiToolSearch: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://api.openai.com/v1",
+      } as unknown as Model<"openai-responses">,
+      payload: {
+        store: false,
+        tool_choice: { type: "function", function: { name: "web_search" } },
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "web_search",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      },
+    });
+    expect(payload.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "web_search",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+  });
+
+  it("skips OpenAI tool_search for non-direct OpenAI base URLs", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": {
+                params: {
+                  openaiToolSearch: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://proxy.example.com/v1",
+      } as unknown as Model<"openai-responses">,
+      payload: {
+        store: false,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "web_search",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      },
+    });
+    expect(payload.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "web_search",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+  });
+
   it.each([
     {
       name: "with openai-codex provider config",
