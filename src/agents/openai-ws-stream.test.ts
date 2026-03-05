@@ -594,6 +594,49 @@ describe("buildAssistantMessageFromResponse", () => {
     expect(msg.content).toEqual([]);
     expect(msg.stopReason).toBe("stop");
   });
+
+  it("ignores hosted tool_search metadata items", () => {
+    const response: ResponseObject = {
+      id: "resp_8",
+      object: "response",
+      created_at: Date.now(),
+      status: "completed",
+      model: "gpt-5.4",
+      output: [
+        {
+          type: "tool_search_call",
+          id: "item_search_call",
+          execution: "server",
+          call_id: null,
+        },
+        {
+          type: "tool_search_output",
+          id: "item_search_output",
+          execution: "server",
+          call_id: null,
+          tools: [{ type: "function", function: { name: "web_search" } }],
+        },
+        {
+          type: "function_call",
+          id: "item_2",
+          call_id: "call_abc",
+          name: "exec",
+          arguments: '{"arg":"value"}',
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+    };
+
+    const msg = buildAssistantMessageFromResponse(response, modelInfo);
+    expect(msg.content).toHaveLength(1);
+    expect(msg.content[0]).toMatchObject({
+      type: "toolCall",
+      id: "call_abc",
+      name: "exec",
+      arguments: { arg: "value" },
+    });
+    expect(msg.stopReason).toBe("toolUse");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

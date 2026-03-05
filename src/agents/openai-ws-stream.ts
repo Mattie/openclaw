@@ -314,6 +314,8 @@ export function buildAssistantMessageFromResponse(
           }
         })(),
       });
+    } else if (item.type === "tool_search_call" || item.type === "tool_search_output") {
+      // Hosted tool-search items are transport metadata only.
     }
     // "reasoning" items are informational only; skip.
   }

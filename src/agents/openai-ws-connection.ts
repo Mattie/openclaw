@@ -54,6 +54,22 @@ export type OutputItem =
       status?: "in_progress" | "completed";
     }
   | {
+      type: "tool_search_call";
+      id: string;
+      call_id?: string | null;
+      execution?: "server" | "client";
+      queries?: string[];
+      status?: "in_progress" | "completed";
+    }
+  | {
+      type: "tool_search_output";
+      id: string;
+      call_id?: string | null;
+      execution?: "server" | "client";
+      tools?: ToolDefinition[];
+      status?: "in_progress" | "completed";
+    }
+  | {
       type: "reasoning";
       id: string;
       content?: string;
@@ -204,12 +220,19 @@ export type ToolChoice =
 
 export interface FunctionToolDefinition {
   type: "function";
+  defer_loading?: boolean;
   function: {
     name: string;
     description?: string;
     parameters?: Record<string, unknown>;
   };
 }
+
+export interface HostedToolSearchDefinition {
+  type: "tool_search";
+}
+
+export type ToolDefinition = FunctionToolDefinition | HostedToolSearchDefinition;
 
 /** Standard response.create event payload (full turn) */
 export interface ResponseCreateEvent {
@@ -219,7 +242,7 @@ export interface ResponseCreateEvent {
   stream?: boolean;
   input?: string | InputItem[];
   instructions?: string;
-  tools?: FunctionToolDefinition[];
+  tools?: ToolDefinition[];
   tool_choice?: ToolChoice;
   context_management?: unknown;
   previous_response_id?: string;
