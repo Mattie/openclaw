@@ -74,7 +74,7 @@ describe("buildGatewayCronService", () => {
     });
   });
 
-  it("routes main-target jobs to the main session for enqueue + wake", async () => {
+  it("routes main-target jobs to the scoped session for enqueue + wake", async () => {
     const tmpDir = path.join(os.tmpdir(), `server-cron-${Date.now()}`);
     const cfg = {
       session: {
@@ -107,12 +107,12 @@ describe("buildGatewayCronService", () => {
       expect(enqueueSystemEventMock).toHaveBeenCalledWith(
         "hello",
         expect.objectContaining({
-          sessionKey: "agent:main:main",
+          sessionKey: "agent:main:discord:channel:ops",
         }),
       );
       expect(requestHeartbeatNowMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          sessionKey: undefined,
+          sessionKey: "agent:main:discord:channel:ops",
         }),
       );
     } finally {

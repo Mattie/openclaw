@@ -5,6 +5,7 @@ import type {
   CronJob,
   CronJobCreate,
   CronJobPatch,
+  CronMessageChannel,
   CronRunOutcome,
   CronRunStatus,
   CronRunTelemetry,
@@ -99,6 +100,14 @@ export type CronServiceDeps = {
     timeoutSeconds?: number;
     maxOutputBytes?: number;
   }) => Promise<CronRunOutcome>;
+  sendCronFailureAlert?: (params: {
+    job: CronJob;
+    text: string;
+    channel: CronMessageChannel;
+    to?: string;
+    mode?: "announce" | "webhook";
+    accountId?: string;
+  }) => Promise<void>;
   onEvent?: (evt: CronEvent) => void;
 };
 
