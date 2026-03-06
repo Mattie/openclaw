@@ -953,6 +953,21 @@ export async function executeJobCore(
   if (abortSignal?.aborted) {
     return resolveAbortError();
   }
+
+  if (job.payload.kind === "directCommand") {
+    if (!state.deps.runDirectCommandJob) {
+      return { status: "skipped", error: "directCommand executor is not configured" };
+    }
+    return await state.deps.runDirectCommandJob({
+      job,
+      command: job.payload.command,
+      args: job.payload.args,
+      cwd: job.payload.cwd,
+      env: job.payload.env,
+      timeoutSeconds: job.payload.timeoutSeconds,
+      maxOutputBytes: job.payload.maxOutputBytes,
+    });
+  }
   if (job.sessionTarget === "main") {
     const text = resolveJobPayloadTextForMain(job);
     if (!text) {
@@ -1039,7 +1054,10 @@ export async function executeJobCore(
   }
 
   if (job.payload.kind !== "agentTurn") {
-    return { status: "skipped", error: "isolated job requires payload.kind=agentTurn" };
+    return {
+      status: "skipped",
+      error: "isolated job requires payload.kind=agentTurn or payload.kind=directCommand",
+    };
   }
   if (abortSignal?.aborted) {
     return resolveAbortError();

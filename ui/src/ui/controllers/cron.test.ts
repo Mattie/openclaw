@@ -77,6 +77,17 @@ describe("cron controller", () => {
     expect(normalized.deliveryMode).toBe("announce");
   });
 
+  it("keeps announce mode when isolated directCommand supports announce", () => {
+    const normalized = normalizeCronFormState({
+      ...DEFAULT_CRON_FORM,
+      sessionTarget: "isolated",
+      payloadKind: "directCommand",
+      deliveryMode: "announce",
+    });
+
+    expect(normalized.deliveryMode).toBe("announce");
+  });
+
   it("forwards webhook delivery in cron.add payload", async () => {
     const request = vi.fn(async (method: string, _payload?: unknown) => {
       if (method === "cron.add") {
@@ -331,6 +342,60 @@ describe("cron controller", () => {
     expect(state.cronForm.deliveryMode).toBe("announce");
   });
 
+  it("forwards directCommand payload fields in cron.add", async () => {
+    const request = vi.fn(async (method: string, _payload?: unknown) => {
+      if (method === "cron.add") {
+        return { id: "job-3" };
+      }
+      if (method === "cron.list") {
+        return { jobs: [] };
+      }
+      if (method === "cron.status") {
+        return { enabled: true, jobs: 0, nextWakeAtMs: null };
+      }
+      return {};
+    });
+
+    const state = createState({
+      client: { request } as unknown as CronState["client"],
+      cronForm: {
+        ...DEFAULT_CRON_FORM,
+        name: "direct command job",
+        scheduleKind: "every",
+        everyAmount: "1",
+        everyUnit: "minutes",
+        sessionTarget: "isolated",
+        payloadKind: "directCommand",
+        payloadCommand: "node",
+        payloadArgs: "-e\nconsole.log('hi')",
+        payloadCwd: "/tmp",
+        payloadEnv: "FOO=bar\nBAZ=qux",
+        timeoutSeconds: "12",
+        maxOutputBytes: "2048",
+        deliveryMode: "announce",
+        deliveryChannel: "telegram",
+        deliveryTo: "123",
+      },
+    });
+
+    await addCronJob(state);
+
+    const addCall = request.mock.calls.find(([method]) => method === "cron.add");
+    expect(addCall?.[1]).toMatchObject({
+      name: "direct command job",
+      payload: {
+        kind: "directCommand",
+        command: "node",
+        args: ["-e", "console.log('hi')"],
+        cwd: "/tmp",
+        env: { FOO: "bar", BAZ: "qux" },
+        timeoutSeconds: 12,
+        maxOutputBytes: 2048,
+      },
+      delivery: { mode: "announce", channel: "telegram", to: "123" },
+    });
+  });
+
   it("submits cron.update when editing an existing job", async () => {
     const request = vi.fn(async (method: string, _payload?: unknown) => {
       if (method === "cron.update") {
@@ -480,6 +545,41 @@ describe("cron controller", () => {
     expect(state.cronForm.deliveryChannel).toBe("telegram");
     expect(state.cronForm.deliveryTo).toBe("123");
     expect(state.cronForm.deliveryAccountId).toBe("bot-2");
+  });
+
+  it("maps directCommand fields into editable form", () => {
+    const state = createState();
+    const job = {
+      id: "job-direct",
+      name: "Direct task",
+      enabled: true,
+      createdAtMs: 0,
+      updatedAtMs: 0,
+      schedule: { kind: "every" as const, everyMs: 60_000 },
+      sessionTarget: "isolated" as const,
+      wakeMode: "now" as const,
+      payload: {
+        kind: "directCommand" as const,
+        command: "node",
+        args: ["-e", "console.log('ok')"],
+        cwd: "/tmp",
+        env: { FOO: "bar" },
+        timeoutSeconds: 30,
+        maxOutputBytes: 4096,
+      },
+      delivery: { mode: "announce" as const, channel: "telegram", to: "123" },
+      state: {},
+    };
+
+    startCronEdit(state, job);
+
+    expect(state.cronForm.payloadKind).toBe("directCommand");
+    expect(state.cronForm.payloadCommand).toBe("node");
+    expect(state.cronForm.payloadArgs).toContain("console.log('ok')");
+    expect(state.cronForm.payloadCwd).toBe("/tmp");
+    expect(state.cronForm.payloadEnv).toBe("FOO=bar");
+    expect(state.cronForm.timeoutSeconds).toBe("30");
+    expect(state.cronForm.maxOutputBytes).toBe("4096");
   });
 
   it("includes model/thinking/stagger/bestEffort in cron.update patch", async () => {
@@ -847,6 +947,22 @@ describe("cron controller", () => {
     expect(errors.payloadText).toBe("cron.errors.agentMessageRequired");
     expect(errors.timeoutSeconds).toBe("cron.errors.timeoutInvalid");
     expect(errors.deliveryTo).toBe("cron.errors.webhookUrlInvalid");
+  });
+
+  it("validates directCommand-specific form errors", () => {
+    const errors = validateCronForm({
+      ...DEFAULT_CRON_FORM,
+      name: "direct",
+      payloadKind: "directCommand",
+      payloadCommand: "",
+      payloadEnv: "INVALID",
+      timeoutSeconds: "0",
+      maxOutputBytes: "-5",
+    });
+    expect(errors.payloadCommand).toBe("Command is required.");
+    expect(errors.payloadEnv).toContain("Invalid env entry");
+    expect(errors.timeoutSeconds).toBe("If set, timeout must be greater than 0 seconds.");
+    expect(errors.maxOutputBytes).toBe("If set, max output must be greater than 0 bytes.");
   });
 
   it("blocks add/update submit when validation errors exist", async () => {

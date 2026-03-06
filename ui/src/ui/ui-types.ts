@@ -33,8 +33,12 @@ export type CronFormState = {
   staggerUnit: "seconds" | "minutes";
   sessionTarget: "main" | "isolated";
   wakeMode: "next-heartbeat" | "now";
-  payloadKind: "systemEvent" | "agentTurn";
+  payloadKind: "systemEvent" | "agentTurn" | "directCommand";
   payloadText: string;
+  payloadCommand: string;
+  payloadArgs: string;
+  payloadCwd: string;
+  payloadEnv: string;
   payloadModel: string;
   payloadThinking: string;
   payloadLightContext: boolean;
@@ -51,4 +55,5 @@ export type CronFormState = {
   failureAlertDeliveryMode: "announce" | "webhook";
   failureAlertAccountId: string;
   timeoutSeconds: string;
+  maxOutputBytes: string;
 };

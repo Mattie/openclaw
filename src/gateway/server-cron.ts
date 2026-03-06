@@ -8,7 +8,13 @@ import {
   resolveAgentMainSessionKey,
 } from "../config/sessions.js";
 import { resolveStorePath } from "../config/sessions/paths.js";
+import { resolveCronDeliveryPlan } from "../cron/delivery.js";
 import { resolveFailureDestination, sendFailureNotificationAnnounce } from "../cron/delivery.js";
+import {
+  formatDirectCommandDeliveryMessage,
+  resolveDirectCommandDeliveryBestEffort,
+} from "../cron/direct-command-delivery.js";
+import { formatDirectCommandResult, runCronDirectCommand } from "../cron/direct-command.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
 import { resolveDeliveryTarget } from "../cron/isolated-agent/delivery-target.js";
 import {
@@ -25,6 +31,7 @@ import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { SsrFBlockedError } from "../infra/net/ssrf.js";
 import { deliverOutboundPayloads } from "../infra/outbound/deliver.js";
+import { resolveAgentOutboundIdentity } from "../infra/outbound/identity.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getChildLogger } from "../logging.js";
 import { normalizeAgentId, toAgentStoreSessionKey } from "../routing/session-key.js";
@@ -37,6 +44,22 @@ export type GatewayCronState = {
 };
 
 const CRON_WEBHOOK_TIMEOUT_MS = 10_000;
+
+function withDirectCommandDeliveryError(
+  result: Awaited<ReturnType<typeof runCronDirectCommand>>,
+  error: string,
+): Awaited<ReturnType<typeof runCronDirectCommand>> {
+  const normalizedResult = result.result
+    ? { ...result.result, status: "error" as const }
+    : undefined;
+  return {
+    ...result,
+    status: "error",
+    error,
+    result: normalizedResult,
+    summary: normalizedResult ? formatDirectCommandResult(normalizedResult) : result.summary,
+  };
+}
 
 function trimToOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -294,6 +317,96 @@ export function buildGatewayCronService(params: {
         sessionKey: `cron:${job.id}`,
         lane: "cron",
       });
+    },
+    runDirectCommandJob: async ({
+      job,
+      command,
+      args,
+      cwd,
+      env,
+      timeoutSeconds,
+      maxOutputBytes,
+    }) => {
+      const directCommandResult = await runCronDirectCommand({
+        jobId: job.id,
+        payload: {
+          kind: "directCommand",
+          command,
+          args,
+          cwd,
+          env,
+          timeoutSeconds,
+          maxOutputBytes,
+        },
+      });
+
+      const deliveryPlan = resolveCronDeliveryPlan(job);
+      if (
+        deliveryPlan.mode !== "announce" ||
+        !deliveryPlan.requested ||
+        !directCommandResult.result
+      ) {
+        return directCommandResult;
+      }
+
+      const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
+      const resolvedDelivery = await resolveDeliveryTarget(runtimeConfig, agentId, {
+        channel: deliveryPlan.channel ?? "last",
+        to: deliveryPlan.to,
+      });
+      const bestEffort = resolveDirectCommandDeliveryBestEffort(job);
+
+      if (resolvedDelivery.error) {
+        if (bestEffort) {
+          cronLogger.warn(
+            { err: String(resolvedDelivery.error), jobId: job.id },
+            "cron: direct command delivery target resolution failed",
+          );
+          return directCommandResult;
+        }
+        return withDirectCommandDeliveryError(directCommandResult, resolvedDelivery.error.message);
+      }
+
+      if (!resolvedDelivery.to) {
+        const message = "cron direct command delivery target is missing";
+        if (bestEffort) {
+          cronLogger.warn({ jobId: job.id }, message);
+          return directCommandResult;
+        }
+        return withDirectCommandDeliveryError(directCommandResult, message);
+      }
+
+      try {
+        await deliverOutboundPayloads({
+          cfg: runtimeConfig,
+          channel: resolvedDelivery.channel,
+          to: resolvedDelivery.to,
+          accountId: resolvedDelivery.accountId,
+          threadId: resolvedDelivery.threadId,
+          payloads: [
+            {
+              text: formatDirectCommandDeliveryMessage({
+                jobName: job.name,
+                result: directCommandResult.result,
+              }),
+            },
+          ],
+          agentId,
+          identity: resolveAgentOutboundIdentity(runtimeConfig, agentId),
+          bestEffort,
+          deps: createOutboundSendDeps(params.deps),
+        });
+      } catch (err) {
+        if (!bestEffort) {
+          return withDirectCommandDeliveryError(directCommandResult, String(err));
+        }
+        cronLogger.warn(
+          { err: String(err), jobId: job.id },
+          "cron: direct command delivery failed (best-effort)",
+        );
+      }
+
+      return directCommandResult;
     },
     sendCronFailureAlert: async ({ job, text, channel, to, mode, accountId }) => {
       const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);

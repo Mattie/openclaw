@@ -31,6 +31,10 @@ export const DEFAULT_CRON_FORM: CronFormState = {
   wakeMode: "now",
   payloadKind: "agentTurn",
   payloadText: "",
+  payloadCommand: "",
+  payloadArgs: "",
+  payloadCwd: "",
+  payloadEnv: "",
   payloadModel: "",
   payloadThinking: "",
   payloadLightContext: false,
@@ -47,4 +51,5 @@ export const DEFAULT_CRON_FORM: CronFormState = {
   failureAlertDeliveryMode: "announce",
   failureAlertAccountId: "",
   timeoutSeconds: "",
+  maxOutputBytes: "",
 };

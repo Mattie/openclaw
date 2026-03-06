@@ -241,6 +241,12 @@ function inputIdForField(key: CronFieldKey) {
   if (key === "payloadText") {
     return "cron-payload-text";
   }
+  if (key === "payloadCommand") {
+    return "cron-payload-command";
+  }
+  if (key === "payloadEnv") {
+    return "cron-payload-env";
+  }
   if (key === "payloadModel") {
     return "cron-payload-model";
   }
@@ -249,6 +255,9 @@ function inputIdForField(key: CronFieldKey) {
   }
   if (key === "timeoutSeconds") {
     return "cron-timeout-seconds";
+  }
+  if (key === "maxOutputBytes") {
+    return "cron-max-output-bytes";
   }
   if (key === "failureAlertAfter") {
     return "cron-failure-alert-after";
@@ -269,6 +278,21 @@ function fieldLabelForKey(
       ? t("cron.form.mainTimelineMessage")
       : t("cron.form.assistantTaskPrompt");
   }
+  if (key === "payloadCommand") {
+    return "Command";
+  }
+  if (key === "payloadEnv") {
+    return "Environment";
+  }
+  if (key === "maxOutputBytes") {
+    return "Max output bytes";
+  }
+  if (key === "failureAlertAfter") {
+    return "Failure alert after";
+  }
+  if (key === "failureAlertCooldownSeconds") {
+    return "Failure alert cooldown";
+  }
   if (key === "deliveryTo") {
     return deliveryMode === "webhook" ? t("cron.form.webhookUrl") : t("cron.form.to");
   }
@@ -279,9 +303,12 @@ function fieldLabelForKey(
     cronExpr: t("cron.form.expression"),
     staggerAmount: t("cron.form.staggerWindow"),
     payloadText: t("cron.form.assistantTaskPrompt"),
+    payloadCommand: "Command",
+    payloadEnv: "Environment",
     payloadModel: t("cron.form.model"),
     payloadThinking: t("cron.form.thinking"),
     timeoutSeconds: t("cron.form.timeoutSeconds"),
+    maxOutputBytes: "Max output bytes",
     deliveryTo: t("cron.form.to"),
     failureAlertAfter: "Failure alert after",
     failureAlertCooldownSeconds: "Failure alert cooldown",
@@ -301,9 +328,12 @@ function collectBlockingFields(
     "cronExpr",
     "staggerAmount",
     "payloadText",
+    "payloadCommand",
+    "payloadEnv",
     "payloadModel",
     "payloadThinking",
     "timeoutSeconds",
+    "maxOutputBytes",
     "deliveryTo",
     "failureAlertAfter",
     "failureAlertCooldownSeconds",
@@ -352,6 +382,7 @@ function renderFieldLabel(text: string, required = false) {
 export function renderCron(props: CronProps) {
   const isEditing = Boolean(props.editingJobId);
   const isAgentTurn = props.form.payloadKind === "agentTurn";
+  const isDirectCommand = props.form.payloadKind === "directCommand";
   const isCronSchedule = props.form.scheduleKind === "cron";
   const channelOptions = buildChannelOptions(props);
   const selectedJob =
@@ -372,7 +403,8 @@ export function renderCron(props: CronProps) {
   const statusSummary = summarizeSelection(selectedStatusLabels, t("cron.runs.allStatuses"));
   const deliverySummary = summarizeSelection(selectedDeliveryLabels, t("cron.runs.allDelivery"));
   const supportsAnnounce =
-    props.form.sessionTarget === "isolated" && props.form.payloadKind === "agentTurn";
+    props.form.sessionTarget === "isolated" &&
+    (props.form.payloadKind === "agentTurn" || props.form.payloadKind === "directCommand");
   const selectedDeliveryMode =
     props.form.deliveryMode === "announce" && !supportsAnnounce ? "none" : props.form.deliveryMode;
   const blockingFields = collectBlockingFields(props.fieldErrors, props.form, selectedDeliveryMode);
@@ -815,7 +847,7 @@ export function renderCron(props: CronProps) {
                 </select>
                 <div class="cron-help">${t("cron.form.wakeModeHelp")}</div>
               </label>
-              <label class="field ${isAgentTurn ? "" : "cron-span-2"}">
+              <label class="field ${isAgentTurn || isDirectCommand ? "" : "cron-span-2"}">
                 ${renderFieldLabel(t("cron.form.payloadKind"))}
                 <select
                   id="cron-payload-kind"
@@ -828,17 +860,20 @@ export function renderCron(props: CronProps) {
                 >
                   <option value="systemEvent">${t("cron.form.systemEvent")}</option>
                   <option value="agentTurn">${t("cron.form.agentTurn")}</option>
+                  <option value="directCommand">Run shell command (isolated)</option>
                 </select>
                 <div class="cron-help">
                   ${
                     props.form.payloadKind === "systemEvent"
                       ? t("cron.form.systemEventHelp")
-                      : t("cron.form.agentTurnHelp")
+                      : props.form.payloadKind === "agentTurn"
+                        ? t("cron.form.agentTurnHelp")
+                        : "Runs an isolated command with optional args, cwd, env, timeout, and output cap."
                   }
                 </div>
               </label>
               ${
-                isAgentTurn
+                isAgentTurn || isDirectCommand
                   ? html`
                       <label class="field">
                         ${renderFieldLabel(t("cron.form.timeoutSeconds"))}
@@ -867,28 +902,123 @@ export function renderCron(props: CronProps) {
                   : nothing
               }
             </div>
-            <label class="field cron-span-2">
-              ${renderFieldLabel(
-                props.form.payloadKind === "systemEvent"
-                  ? t("cron.form.mainTimelineMessage")
-                  : t("cron.form.assistantTaskPrompt"),
-                true,
-              )}
-              <textarea
-                id="cron-payload-text"
-                .value=${props.form.payloadText}
-                aria-invalid=${props.fieldErrors.payloadText ? "true" : "false"}
-                aria-describedby=${ifDefined(
-                  props.fieldErrors.payloadText ? errorIdForField("payloadText") : undefined,
-                )}
-                @input=${(e: Event) =>
-                  props.onFormChange({
-                    payloadText: (e.target as HTMLTextAreaElement).value,
-                  })}
-                rows="4"
-              ></textarea>
-              ${renderFieldError(props.fieldErrors.payloadText, errorIdForField("payloadText"))}
-            </label>
+            ${
+              isDirectCommand
+                ? html`
+                    <div class="form-grid cron-form-grid">
+                      <label class="field">
+                        ${renderFieldLabel("Command", true)}
+                        <input
+                          id="cron-payload-command"
+                          .value=${props.form.payloadCommand}
+                          placeholder="node"
+                          aria-invalid=${props.fieldErrors.payloadCommand ? "true" : "false"}
+                          aria-describedby=${ifDefined(
+                            props.fieldErrors.payloadCommand
+                              ? errorIdForField("payloadCommand")
+                              : undefined,
+                          )}
+                          @input=${(e: Event) =>
+                            props.onFormChange({
+                              payloadCommand: (e.target as HTMLInputElement).value,
+                            })}
+                        />
+                        ${renderFieldError(
+                          props.fieldErrors.payloadCommand,
+                          errorIdForField("payloadCommand"),
+                        )}
+                      </label>
+                      <label class="field">
+                        <span>Working directory (optional)</span>
+                        <input
+                          .value=${props.form.payloadCwd}
+                          placeholder="/workspace"
+                          @input=${(e: Event) =>
+                            props.onFormChange({
+                              payloadCwd: (e.target as HTMLInputElement).value,
+                            })}
+                        />
+                      </label>
+                    </div>
+                    <label class="field cron-span-2">
+                      <span>Args (one per line)</span>
+                      <textarea
+                        .value=${props.form.payloadArgs}
+                        @input=${(e: Event) =>
+                          props.onFormChange({
+                            payloadArgs: (e.target as HTMLTextAreaElement).value,
+                          })}
+                        rows="3"
+                      ></textarea>
+                    </label>
+                    <label class="field cron-span-2">
+                      <span>Env (KEY=VALUE, one per line)</span>
+                      <textarea
+                        id="cron-payload-env"
+                        .value=${props.form.payloadEnv}
+                        aria-invalid=${props.fieldErrors.payloadEnv ? "true" : "false"}
+                        aria-describedby=${ifDefined(
+                          props.fieldErrors.payloadEnv ? errorIdForField("payloadEnv") : undefined,
+                        )}
+                        @input=${(e: Event) =>
+                          props.onFormChange({
+                            payloadEnv: (e.target as HTMLTextAreaElement).value,
+                          })}
+                        rows="3"
+                      ></textarea>
+                      ${renderFieldError(props.fieldErrors.payloadEnv, errorIdForField("payloadEnv"))}
+                    </label>
+                    <label class="field">
+                      <span>Max output bytes (optional)</span>
+                      <input
+                        id="cron-max-output-bytes"
+                        .value=${props.form.maxOutputBytes}
+                        placeholder="65536"
+                        aria-invalid=${props.fieldErrors.maxOutputBytes ? "true" : "false"}
+                        aria-describedby=${ifDefined(
+                          props.fieldErrors.maxOutputBytes
+                            ? errorIdForField("maxOutputBytes")
+                            : undefined,
+                        )}
+                        @input=${(e: Event) =>
+                          props.onFormChange({
+                            maxOutputBytes: (e.target as HTMLInputElement).value,
+                          })}
+                      />
+                      <div class="cron-help">Optional output cap to avoid oversized logs.</div>
+                      ${renderFieldError(
+                        props.fieldErrors.maxOutputBytes,
+                        errorIdForField("maxOutputBytes"),
+                      )}
+                    </label>
+                  `
+                : html`
+                    <label class="field cron-span-2">
+                      ${renderFieldLabel(
+                        props.form.payloadKind === "systemEvent"
+                          ? t("cron.form.mainTimelineMessage")
+                          : t("cron.form.assistantTaskPrompt"),
+                        true,
+                      )}
+                      <textarea
+                        id="cron-payload-text"
+                        .value=${props.form.payloadText}
+                        aria-invalid=${props.fieldErrors.payloadText ? "true" : "false"}
+                        aria-describedby=${ifDefined(
+                          props.fieldErrors.payloadText
+                            ? errorIdForField("payloadText")
+                            : undefined,
+                        )}
+                        @input=${(e: Event) =>
+                          props.onFormChange({
+                            payloadText: (e.target as HTMLTextAreaElement).value,
+                          })}
+                        rows="4"
+                      ></textarea>
+                      ${renderFieldError(props.fieldErrors.payloadText, errorIdForField("payloadText"))}
+                    </label>
+                  `
+            }
           </section>
 
           <section class="cron-form-section">
@@ -1608,11 +1738,20 @@ function renderJobPayload(job: CronJob) {
         ? ` (${delivery.channel ?? "last"}${delivery.to ? ` -> ${delivery.to}` : ""})`
         : "";
 
-  return html`
-    <div class="cron-job-detail">
-      <span class="cron-job-detail-label">${t("cron.jobDetail.prompt")}</span>
-      <span class="muted cron-job-detail-value">${job.payload.message}</span>
-    </div>
+  const payloadDetail =
+    job.payload.kind === "directCommand"
+      ? html`<div class="cron-job-detail">
+          <span class="cron-job-detail-label">Command</span>
+          <span class="muted cron-job-detail-value"
+            >${[job.payload.command, ...(job.payload.args ?? [])].join(" ")}</span
+          >
+        </div>`
+      : html`<div class="cron-job-detail">
+          <span class="cron-job-detail-label">${t("cron.jobDetail.prompt")}</span>
+          <span class="muted cron-job-detail-value">${job.payload.message}</span>
+        </div>`;
+
+  return html`${payloadDetail}
     ${
       delivery
         ? html`<div class="cron-job-detail">
@@ -1620,8 +1759,7 @@ function renderJobPayload(job: CronJob) {
             <span class="muted cron-job-detail-value">${delivery.mode}${deliveryTarget}</span>
           </div>`
         : nothing
-    }
-  `;
+    }`;
 }
 
 function formatStateRelative(ms?: number) {

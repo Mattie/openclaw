@@ -49,9 +49,14 @@ export function registerCronEditCommand(cron: Command) {
       .option("--exact", "Disable cron staggering (set stagger to 0)")
       .option("--system-event <text>", "Set systemEvent payload")
       .option("--message <text>", "Set agentTurn payload message")
+      .option("--command <cmd>", "Set directCommand payload command")
+      .option("--arg <value>", "Set directCommand arg list (repeatable)", collectCliList, [])
+      .option("--cwd <path>", "Set directCommand working directory")
+      .option("--env <name=value>", "Set directCommand env vars (repeatable)", collectCliList, [])
       .option("--thinking <level>", "Thinking level for agent jobs")
       .option("--model <model>", "Model override for agent jobs")
-      .option("--timeout-seconds <n>", "Timeout seconds for agent jobs")
+      .option("--timeout-seconds <n>", "Timeout seconds for agent/direct-command jobs")
+      .option("--max-output-bytes <n>", "Set directCommand max output bytes")
       .option("--light-context", "Enable lightweight bootstrap context for agent jobs")
       .option("--no-light-context", "Disable lightweight bootstrap context for agent jobs")
       .option("--announce", "Announce summary to a chat (subagent-style)")
@@ -203,6 +208,19 @@ export function registerCronEditCommand(cron: Command) {
           }
 
           const hasSystemEventPatch = typeof opts.systemEvent === "string";
+          const command =
+            typeof opts.command === "string" && opts.command.trim()
+              ? opts.command.trim()
+              : undefined;
+          const args = normalizeCliList(opts.arg);
+          const cwd = typeof opts.cwd === "string" && opts.cwd.trim() ? opts.cwd.trim() : undefined;
+          const envEntries = normalizeCliList(opts.env);
+          const hasDirectCommandPatch =
+            Boolean(command) ||
+            args.length > 0 ||
+            Boolean(cwd) ||
+            envEntries.length > 0 ||
+            Boolean(opts.maxOutputBytes);
           const model =
             typeof opts.model === "string" && opts.model.trim() ? opts.model.trim() : undefined;
           const thinking =
@@ -217,24 +235,45 @@ export function registerCronEditCommand(cron: Command) {
           const hasDeliveryTarget = typeof opts.channel === "string" || typeof opts.to === "string";
           const hasDeliveryAccount = typeof opts.account === "string";
           const hasBestEffort = typeof opts.bestEffortDeliver === "boolean";
+          const hasDeliveryPatch =
+            hasDeliveryModeFlag || hasDeliveryTarget || hasDeliveryAccount || hasBestEffort;
           const hasAgentTurnPatch =
             typeof opts.message === "string" ||
             Boolean(model) ||
             Boolean(thinking) ||
-            hasTimeoutSeconds ||
-            typeof opts.lightContext === "boolean" ||
-            hasDeliveryModeFlag ||
-            hasDeliveryTarget ||
-            hasDeliveryAccount ||
-            hasBestEffort;
-          if (hasSystemEventPatch && hasAgentTurnPatch) {
+            (hasTimeoutSeconds && !hasDirectCommandPatch) ||
+            (typeof opts.lightContext === "boolean" && !hasDirectCommandPatch) ||
+            (hasDeliveryPatch && !hasDirectCommandPatch);
+          if (hasSystemEventPatch && (hasAgentTurnPatch || hasDirectCommandPatch)) {
             throw new Error("Choose at most one payload change");
+          }
+          if (hasAgentTurnPatch && hasDirectCommandPatch) {
+            throw new Error("Choose agentTurn or directCommand payload flags, not both");
           }
           if (hasSystemEventPatch) {
             patch.payload = {
               kind: "systemEvent",
               text: String(opts.systemEvent),
             };
+          } else if (hasDirectCommandPatch) {
+            const payload: Record<string, unknown> = { kind: "directCommand" };
+            assignIf(payload, "command", command, Boolean(command));
+            assignIf(payload, "args", args, args.length > 0);
+            assignIf(payload, "cwd", cwd, Boolean(cwd));
+            if (envEntries.length > 0) {
+              payload.env = parseEnvAssignments(envEntries);
+            }
+            const maxOutputBytes = opts.maxOutputBytes
+              ? Number.parseInt(String(opts.maxOutputBytes), 10)
+              : undefined;
+            assignIf(
+              payload,
+              "maxOutputBytes",
+              maxOutputBytes,
+              Boolean(maxOutputBytes && Number.isFinite(maxOutputBytes)),
+            );
+            assignIf(payload, "timeoutSeconds", timeoutSeconds, hasTimeoutSeconds);
+            patch.payload = payload;
           } else if (hasAgentTurnPatch) {
             const payload: Record<string, unknown> = { kind: "agentTurn" };
             assignIf(payload, "message", String(opts.message), typeof opts.message === "string");
@@ -250,7 +289,7 @@ export function registerCronEditCommand(cron: Command) {
             patch.payload = payload;
           }
 
-          if (hasDeliveryModeFlag || hasDeliveryTarget || hasDeliveryAccount || hasBestEffort) {
+          if (hasDeliveryPatch) {
             const delivery: Record<string, unknown> = {};
             if (hasDeliveryModeFlag) {
               delivery.mode = opts.announce || opts.deliver === true ? "announce" : "none";
@@ -346,4 +385,33 @@ export function registerCronEditCommand(cron: Command) {
         }
       }),
   );
+}
+
+function normalizeCliList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function collectCliList(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseEnvAssignments(entries: string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const entry of entries) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) {
+      throw new Error(`Invalid --env entry: ${entry}. Expected NAME=value.`);
+    }
+    const key = entry.slice(0, separator).trim();
+    if (!key) {
+      throw new Error(`Invalid --env entry: ${entry}. Expected NAME=value.`);
+    }
+    env[key] = entry.slice(separator + 1);
+  }
+  return env;
 }

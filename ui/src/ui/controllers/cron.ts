@@ -26,9 +26,12 @@ export type CronFieldKey =
   | "cronExpr"
   | "staggerAmount"
   | "payloadText"
+  | "payloadCommand"
+  | "payloadEnv"
   | "payloadModel"
   | "payloadThinking"
   | "timeoutSeconds"
+  | "maxOutputBytes"
   | "deliveryTo"
   | "failureAlertAfter"
   | "failureAlertCooldownSeconds";
@@ -84,7 +87,10 @@ export type CronModelSuggestionsState = {
 export function supportsAnnounceDelivery(
   form: Pick<CronFormState, "sessionTarget" | "payloadKind">,
 ) {
-  return form.sessionTarget === "isolated" && form.payloadKind === "agentTurn";
+  return (
+    form.sessionTarget === "isolated" &&
+    (form.payloadKind === "agentTurn" || form.payloadKind === "directCommand")
+  );
 }
 
 export function normalizeCronFormState(form: CronFormState): CronFormState {
@@ -129,18 +135,42 @@ export function validateCronForm(form: CronFormState): CronFieldErrors {
       }
     }
   }
-  if (!form.payloadText.trim()) {
+  if (form.payloadKind === "directCommand") {
+    if (!form.payloadCommand.trim()) {
+      errors.payloadCommand = "Command is required.";
+    }
+    const envLines = form.payloadEnv
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    for (const line of envLines) {
+      const separator = line.indexOf("=");
+      if (separator <= 0 || !line.slice(0, separator).trim()) {
+        errors.payloadEnv = `Invalid env entry: ${line}`;
+        break;
+      }
+    }
+  } else if (!form.payloadText.trim()) {
     errors.payloadText =
       form.payloadKind === "systemEvent"
         ? "cron.errors.systemTextRequired"
         : "cron.errors.agentMessageRequired";
   }
-  if (form.payloadKind === "agentTurn") {
+  if (form.payloadKind === "agentTurn" || form.payloadKind === "directCommand") {
     const timeoutRaw = form.timeoutSeconds.trim();
     if (timeoutRaw) {
       const timeout = toNumber(timeoutRaw, 0);
       if (timeout <= 0) {
         errors.timeoutSeconds = "cron.errors.timeoutInvalid";
+      }
+    }
+  }
+  if (form.payloadKind === "directCommand") {
+    const maxOutputRaw = form.maxOutputBytes.trim();
+    if (maxOutputRaw) {
+      const maxOutput = toNumber(maxOutputRaw, 0);
+      if (maxOutput <= 0) {
+        errors.maxOutputBytes = "If set, max output must be greater than 0 bytes.";
       }
     }
   }
@@ -450,7 +480,21 @@ function jobToForm(job: CronJob, prev: CronFormState): CronFormState {
     sessionTarget: job.sessionTarget,
     wakeMode: job.wakeMode,
     payloadKind: job.payload.kind,
-    payloadText: job.payload.kind === "systemEvent" ? job.payload.text : job.payload.message,
+    payloadText:
+      job.payload.kind === "systemEvent"
+        ? job.payload.text
+        : job.payload.kind === "agentTurn"
+          ? job.payload.message
+          : "",
+    payloadCommand: job.payload.kind === "directCommand" ? job.payload.command : "",
+    payloadArgs: job.payload.kind === "directCommand" ? (job.payload.args ?? []).join("\n") : "",
+    payloadCwd: job.payload.kind === "directCommand" ? (job.payload.cwd ?? "") : "",
+    payloadEnv:
+      job.payload.kind === "directCommand"
+        ? Object.entries(job.payload.env ?? {})
+            .map(([key, value]) => `${key}=${value}`)
+            .join("\n")
+        : "",
     payloadModel: job.payload.kind === "agentTurn" ? (job.payload.model ?? "") : "",
     payloadThinking: job.payload.kind === "agentTurn" ? (job.payload.thinking ?? "") : "",
     payloadLightContext:
@@ -488,8 +532,13 @@ function jobToForm(job: CronJob, prev: CronFormState): CronFormState {
     failureAlertAccountId:
       failureAlert && typeof failureAlert === "object" ? (failureAlert.accountId ?? "") : "",
     timeoutSeconds:
-      job.payload.kind === "agentTurn" && typeof job.payload.timeoutSeconds === "number"
+      (job.payload.kind === "agentTurn" || job.payload.kind === "directCommand") &&
+      typeof job.payload.timeoutSeconds === "number"
         ? String(job.payload.timeoutSeconds)
+        : "",
+    maxOutputBytes:
+      job.payload.kind === "directCommand" && typeof job.payload.maxOutputBytes === "number"
+        ? String(job.payload.maxOutputBytes)
         : "",
   };
 
@@ -555,32 +604,89 @@ export function buildCronPayload(form: CronFormState) {
     }
     return { kind: "systemEvent" as const, text };
   }
-  const message = form.payloadText.trim();
-  if (!message) {
-    throw new Error(t("cron.errors.agentMessageRequiredShort"));
+  if (form.payloadKind === "agentTurn") {
+    const message = form.payloadText.trim();
+    if (!message) {
+      throw new Error(t("cron.errors.agentMessageRequiredShort"));
+    }
+    const payload: {
+      kind: "agentTurn";
+      message: string;
+      model?: string;
+      thinking?: string;
+      timeoutSeconds?: number;
+      lightContext?: boolean;
+    } = { kind: "agentTurn", message };
+    const model = form.payloadModel.trim();
+    if (model) {
+      payload.model = model;
+    }
+    const thinking = form.payloadThinking.trim();
+    if (thinking) {
+      payload.thinking = thinking;
+    }
+    const timeoutSeconds = toNumber(form.timeoutSeconds, 0);
+    if (timeoutSeconds > 0) {
+      payload.timeoutSeconds = timeoutSeconds;
+    }
+    if (form.payloadLightContext) {
+      payload.lightContext = true;
+    }
+    return payload;
   }
+
+  const command = form.payloadCommand.trim();
+  if (!command) {
+    throw new Error("Command is required.");
+  }
+  const args = form.payloadArgs
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const envLines = form.payloadEnv
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const envEntries: Array<[string, string]> = [];
+  for (const line of envLines) {
+    const separator = line.indexOf("=");
+    if (separator <= 0) {
+      throw new Error(`Invalid env entry: ${line}`);
+    }
+    const key = line.slice(0, separator).trim();
+    const value = line.slice(separator + 1);
+    if (!key) {
+      throw new Error(`Invalid env entry: ${line}`);
+    }
+    envEntries.push([key, value]);
+  }
+
   const payload: {
-    kind: "agentTurn";
-    message: string;
-    model?: string;
-    thinking?: string;
+    kind: "directCommand";
+    command: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
     timeoutSeconds?: number;
-    lightContext?: boolean;
-  } = { kind: "agentTurn", message };
-  const model = form.payloadModel.trim();
-  if (model) {
-    payload.model = model;
+    maxOutputBytes?: number;
+  } = { kind: "directCommand", command };
+  if (args.length > 0) {
+    payload.args = args;
   }
-  const thinking = form.payloadThinking.trim();
-  if (thinking) {
-    payload.thinking = thinking;
+  const cwd = form.payloadCwd.trim();
+  if (cwd) {
+    payload.cwd = cwd;
+  }
+  if (envEntries.length > 0) {
+    payload.env = Object.fromEntries(envEntries);
   }
   const timeoutSeconds = toNumber(form.timeoutSeconds, 0);
   if (timeoutSeconds > 0) {
     payload.timeoutSeconds = timeoutSeconds;
   }
-  if (form.payloadLightContext) {
-    payload.lightContext = true;
+  const maxOutputBytes = toNumber(form.maxOutputBytes, 0);
+  if (maxOutputBytes > 0) {
+    payload.maxOutputBytes = maxOutputBytes;
   }
   return payload;
 }

@@ -366,6 +366,65 @@ describe("cron view", () => {
     expect(container.textContent).toContain("https://example.invalid/cron");
   });
 
+  it("shows direct command payload fields in the form", () => {
+    const container = document.createElement("div");
+    render(
+      renderCron(
+        createProps({
+          form: {
+            ...DEFAULT_CRON_FORM,
+            payloadKind: "directCommand",
+          },
+        }),
+      ),
+      container,
+    );
+
+    expect(container.textContent).toContain("Command");
+    expect(container.textContent).toContain("Args (one per line)");
+    expect(container.textContent).toContain("Env (KEY=VALUE, one per line)");
+    expect(container.textContent).toContain("Max output bytes (optional)");
+  });
+
+  it("shows direct command details for jobs", () => {
+    const container = document.createElement("div");
+    const job = {
+      ...createJob("job-3"),
+      sessionTarget: "isolated" as const,
+      payload: {
+        kind: "directCommand" as const,
+        command: "node",
+        args: ["-e", "console.log('hi')"],
+      },
+    };
+    render(renderCron(createProps({ jobs: [job] })), container);
+
+    expect(container.textContent).toContain("Command");
+    expect(container.textContent).toContain("node -e console.log('hi')");
+  });
+
+  it("keeps announce available for isolated direct command jobs", () => {
+    const container = document.createElement("div");
+    render(
+      renderCron(
+        createProps({
+          form: {
+            ...DEFAULT_CRON_FORM,
+            sessionTarget: "isolated",
+            payloadKind: "directCommand",
+            deliveryMode: "announce",
+          },
+        }),
+      ),
+      container,
+    );
+
+    const options = Array.from(container.querySelectorAll("option")).map((opt) =>
+      (opt.textContent ?? "").trim(),
+    );
+    expect(options).toContain("Announce summary (default)");
+  });
+
   it("wires the Edit action and shows save/cancel controls when editing", () => {
     const container = document.createElement("div");
     const onEdit = vi.fn();

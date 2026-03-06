@@ -91,6 +91,15 @@ export type CronServiceDeps = {
     } & CronRunOutcome &
       CronRunTelemetry
   >;
+  runDirectCommandJob?: (params: {
+    job: CronJob;
+    command: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutSeconds?: number;
+    maxOutputBytes?: number;
+  }) => Promise<CronRunOutcome>;
   sendCronFailureAlert?: (params: {
     job: CronJob;
     text: string;
